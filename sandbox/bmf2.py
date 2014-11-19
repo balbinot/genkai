@@ -27,8 +27,8 @@ def interp_model_spl(X, Y, Z):
 def gen_mock():
 
     idir = "/scratch/isocdir/"
-    nobs = 30
-    nbg = 1000
+    nobs = 2000
+    nbg = 2000
     nmod = 2000000
     dmod = 16.0
     age = 10.08
@@ -73,27 +73,28 @@ def gen_mock():
     fcl,xl,yl = np.histogram2d(mg-mr, mg, bins=(80,160),
                                range=[[cmin,cmax],[mmin,mmax]], normed=True)
 
-    np.savez('cl_model.npz', fcl=fcl, xl=xl, yl=yl)
+    bg = mmin + (mmax - mmin)*np.random.rand(nmod)
+    bgr = cmin + (cmax - cmin)*np.random.rand(nmod)
+    br = -(bgr - bg)
+    fbg,xl,yl = np.histogram2d(bg-br, bg, bins=(80,160),
+                               range=[[cmin,cmax],[mmin,mmax]], normed=True)
 
-def lhood(P, F, B, obs, N):
+    np.savez('cl_model.npz', fcl=fcl, xl=xl, yl=yl, fbg=fbg)
+
+def lhood(P, F, B, N):
 
     l = P[0]
-    g = P[1]
-    col = obs[0]
-    mag = obs[1]
-
-    #f = F(col, mag)
-    #b = B(col, mag)
+    t = P[1]
     f = F
     b = B
-    if l < 0 or g < 0 or l+g > len(col)+8*np.sqrt(len(col)):
+    if l < 0 or t < 0:
         return -np.Inf
     else:
-
-        prob = l*f/(l*f + g*b)
-        prob = np.ma.array(prob)
-
-        lnL = -(l + g) - np.sum(np.ma.log((1-prob)/(g*b)))
+        mod = l*f + (t-l)*b
+#        mod = np.ma.array(mod)
+#        lnL = np.ma.sum(np.ma.log(mod) - mod) - N
+        lnL = -t + np.ma.sum(np.ma.log(mod)) - N
+#        print(l, t, lnL)
         return lnL
 
 gen_mock()
@@ -101,7 +102,7 @@ gen_mock()
 g,r = np.loadtxt('sim_cl.dat', unpack=True)
 bg,br = np.loadtxt('sim_bg.dat', unpack=True)
 x = np.load('cl_model.npz')
-fcl, xl, yl = x['fcl'], x['xl'], x['yl']
+fcl, xl, yl, fbg = x['fcl'], x['xl'], x['yl'], x['fbg']
 
 true_cl = len(g)
 true_bg = len(bg)
@@ -109,22 +110,22 @@ true_ntot = true_cl + true_bg
 
 print(true_cl, true_bg, true_ntot)
 
-#p.plot(bg-br, bg, 'ro')
-#p.plot(g-r, g, 'ko')
-#p.show()
-
-#g = np.r_[g,bg]
-#r = np.r_[r,br]
-
-g = bg
-r = br
+g = np.r_[g,bg]
+r = np.r_[r,br]
+#g = bg
+#r = br
 
 from scipy.ndimage import gaussian_filter as gs
 fcl = gs(fcl, 2)
 fcl /= np.sum(fcl)
+print('Fcl check:', np.sum(fcl), np.min(fcl), np.max(fcl))
 
-fbg = np.ones_like(fcl)
-fbg /= np.sum(fbg)
+#fbg = gs(fbg, 2)
+fbg *= (xl[1]-xl[0])*(yl[1]-yl[0])
+#p.imshow(fcl)
+#p.show()
+#exit()
+print('Fbg check:', np.sum(fbg), np.min(fbg), np.max(fbg))
 
 ext = [xl[0], xl[-1], yl[-1], yl[0]]
 tx = (xl[1:] + xl[:-1])/2
@@ -151,17 +152,21 @@ C = c
 M = m
 f = F(C, M)
 b = B(C, M)
+#b = np.mean(fbg)
+#mod = 100*f + (12100-100)*b
+#p.scatter(C, M, s=80, c=mod, lw=0)
+#p.colorbar()
+#p.ylim(p.ylim()[::-1])
+#p.show()
+#exit()
 
-Num = true_ntot + 8*np.sqrt(true_ntot)
+Num = true_ntot
 ndim, nwalkers = 2, 8
 
-p0 = [[true_cl + 5*np.random.randn(),true_bg + 5*np.random.randn()] for i in
+p0 = [[true_cl + 5*np.random.randn(),  true_ntot + 6*np.random.randn()] for i in
       range(nwalkers)]
 
-#p0 = [*np.random.rand(ndim) for i in range(nwalkers)]
-#sampler = emcee.EnsembleSampler(nwalkers, ndim, lhood, args=[F, B, [C,M], Num],
-#                                threads=8)
-sampler = emcee.EnsembleSampler(nwalkers, ndim, lhood, args=[f, b, [C,M], Num],
+sampler = emcee.EnsembleSampler(nwalkers, ndim, lhood, args=[f, b, Num],
                                 threads=8)
 
 pos, prob, state = sampler.run_mcmc(p0, 100)
@@ -171,8 +176,9 @@ sampler.run_mcmc(pos, 1500)
 lbl = [r'$N_{cl}$', r'$N_{bg}$']
 
 chain = sampler.flatchain
-corner(chain, labels=lbl, truths=[true_cl, true_bg])
+corner(chain, labels=lbl, truths=[true_cl, true_ntot])
 
+BEST = []
 for i, n in enumerate(lbl):
     p.figure()
     p.plot(chain[:,i], 'k-', alpha=0.3)
@@ -180,6 +186,7 @@ for i, n in enumerate(lbl):
     p.ylabel(n)
 
     print(n, np.median(chain[:,i]), u'±', np.std(chain[:,i]))
+    BEST.append(np.median(chain[:,i]))
 
 p.figure()
 p.plot(c, m, 'k.', ms=1)
